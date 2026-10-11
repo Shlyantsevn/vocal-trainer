@@ -22,6 +22,13 @@ namespace
     constexpr const char* kExerciseRootMidi  = "exerciseRootMidi";
     constexpr const char* kExerciseBpm       = "exerciseBpm";
     constexpr const char* kExerciseLengthSec = "exerciseLengthSeconds";
+    constexpr const char* kSongLanguage      = "songLanguage";
+
+    juce::String sanitiseLanguage (const juce::String& s)
+    {
+        const auto l = s.trim().toLowerCase();
+        return (l == "ru" || l == "en") ? l : juce::String ("auto");
+    }
 
     /** How far up from the executable to look for the repo. A Release build
         lands in build/VocalTrainer_artefacts/Release/Standalone/, which is four
@@ -188,6 +195,21 @@ void AppSettings::setLastAudioDirectory (const juce::File& dir)
 {
     if (props != nullptr && dir.isDirectory())
         props->setValue (kLastAudioDir, dir.getFullPathName());
+}
+
+//==============================================================================
+juce::String AppSettings::getSongLanguage() const
+{
+    if (props == nullptr)
+        return "auto";
+
+    return sanitiseLanguage (props->getValue (kSongLanguage, "auto"));
+}
+
+void AppSettings::setSongLanguage (const juce::String& language)
+{
+    if (props != nullptr)
+        props->setValue (kSongLanguage, sanitiseLanguage (language));
 }
 
 //==============================================================================
