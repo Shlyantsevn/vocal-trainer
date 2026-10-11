@@ -108,9 +108,13 @@ class Generator:
     lyricModel: Optional[str] = None
     separator: str = "none"            # none | bs-roformer ep_317 | htdemucs_ft
     generatedAt: Optional[str] = None  # ISO-8601 UTC, e.g. 2026-08-01T14:22:10Z
+    # OPTIONAL, added with Russian support: ISO 639-1 language of the lyrics
+    # ("ru", "en"). Omitted from the JSON when unknown, so charts written
+    # without it are byte-identical to before and old readers never see it.
+    lyricLanguage: Optional[str] = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d = {
             "tool": self.tool,
             "version": self.version,
             "pitchModel": self.pitchModel,
@@ -119,6 +123,9 @@ class Generator:
             "separator": self.separator,
             "generatedAt": self.generatedAt,
         }
+        if self.lyricLanguage:
+            d["lyricLanguage"] = self.lyricLanguage
+        return d
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "Generator":
@@ -130,6 +137,7 @@ class Generator:
             lyricModel=d.get("lyricModel"),
             separator=d.get("separator", "none"),
             generatedAt=d.get("generatedAt"),
+            lyricLanguage=d.get("lyricLanguage"),
         )
 
 

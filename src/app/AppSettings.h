@@ -80,6 +80,12 @@ public:
     juce::File getTakesDirectory (const juce::File& songDirectory,
                                   const juce::String& songId) const;
 
+    //== Song import ==========================================================
+    /** Language passed to the pipeline as --language: "auto", "ru" or "en".
+        Anything else read back from disk is treated as "auto". */
+    juce::String getSongLanguage() const;
+    void setSongLanguage (const juce::String& language);
+
     //== Live monitoring ======================================================
     /** Monitor level in dB. Persisted because it depends on the singer's
         headphones and interface gain, not on the song. */

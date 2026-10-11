@@ -95,8 +95,14 @@ public:
 
     //== running ===============================================================
 
-    /** Begin. Returns false and fills `error` if nothing was started. */
-    bool start (const juce::File& audioFile, juce::String& error);
+    /** Begin. Returns false and fills `error` if nothing was started.
+
+        `language` is passed as --language ("auto", "ru", "en"); `lyricsFile`,
+        if it exists, as --lyrics. Defaults keep the old command line apart
+        from an explicit --language auto. */
+    bool start (const juce::File& audioFile, juce::String& error,
+                const juce::String& language = "auto",
+                const juce::File& lyricsFile = {});
 
     /** Ask the run to stop. Returns immediately; onFinished still fires. */
     void cancel();
@@ -118,6 +124,8 @@ private:
     static juce::File searchForInterpreterNear (const juce::File& start);
 
     juce::File sourceFile;
+    juce::File lyricsFile;
+    juce::String songLanguage { "auto" };
     juce::File cancelFile;
     juce::File interpreter;
 

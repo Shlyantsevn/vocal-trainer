@@ -700,6 +700,7 @@ def _pipeline(
     no_lyrics: bool,
     model: str,
     separate: bool,
+    language: str = "auto",
     separator_model: Optional[str] = None,
     separator_python: Optional[str] = None,
     title: Optional[str] = None,
@@ -730,10 +731,12 @@ def _pipeline(
     # Stage 3. Deliberately AFTER segmentation and deliberately non-fatal: the
     # syllables decorate notes that already exist, so a transcription failure
     # costs the lyrics and nothing else.
+    lyric_info: dict = {}
     if not no_lyrics:
         _abort_if_cancelled(stop)
         rep.stage("lyrics")
-        words, lyric_source = _run_lyrics(song, force, rep.say, model)
+        words, lyric_source = _run_lyrics(song, force, rep.say, model,
+                                          language=language, info=lyric_info)
 
         if words:
             from .lyrics import assign_syllables_to_notes
@@ -752,6 +755,7 @@ def _pipeline(
 
     if lyric_source != "none":
         chart.generator.lyricModel = f"faster-whisper {model}"
+        chart.generator.lyricLanguage = lyric_info.get("language") or None
 
     try:
         chart.validate()
@@ -814,6 +818,10 @@ def _separation_options(func):
 def _lyric_options(func):
     func = click.option("--model", default="medium", show_default=True,
                         help="Whisper model for lyrics: tiny/base/small/medium/large-v3.")(func)
+    func = click.option("--language", "language", default="auto", show_default=True,
+                        type=click.Choice(["auto", "ru", "en"], case_sensitive=False),
+                        help="Song language. auto: from lyrics.txt's alphabet if "
+                             "present, else Whisper detects it.")(func)
     func = click.option("--no-lyrics", is_flag=True, default=False,
                         help="Skip stage 3 entirely (faster; charts get syllable: null).")(func)
     return func
@@ -838,7 +846,7 @@ def _lyric_options(func):
 @click.pass_context
 def cmd_build(ctx: click.Context, song_dir: str, force: bool, verbose: bool,
               phrase_gap: float, no_ultrastar: bool, no_lyrics: bool,
-              model: str, no_separate: bool, separator_model: Optional[str],
+              model: str, language: str, no_separate: bool, separator_model: Optional[str],
               separator_python: Optional[str], progress_json: bool,
               cancel_file: Optional[Path]) -> None:
     """Full pipeline - writes chart.json and chart.ultrastar.txt.
@@ -861,7 +869,7 @@ def cmd_build(ctx: click.Context, song_dir: str, force: bool, verbose: bool,
     stop = _cancel_check(cancel_file)
     chart = _guard(rep, lambda: _pipeline(
         song, rep, force=force, phrase_gap=phrase_gap, no_ultrastar=no_ultrastar,
-        no_lyrics=no_lyrics, model=model, separate=separate,
+        no_lyrics=no_lyrics, model=model, language=language, separate=separate,
         separator_model=separator_model, separator_python=separator_python,
         cancel=stop))
     _report_chart(song, chart, rep)
@@ -1066,15 +1074,23 @@ def _run_lyrics(
     force: bool,
     say: Callable[[str], None],
     model: str = "medium",
+    language: str = "auto",
+    info: Optional[dict] = None,
 ) -> tuple[list, str]:
     """Stage 3. Returns (words, lyricSource). Never raises — a chart without
     lyrics is still a perfectly good chart, so a transcription failure degrades
-    rather than aborting the build."""
+    rather than aborting the build.
+
+    `language` is the --language choice (auto|ru|en). The language actually
+    used is written to words.json and, if `info` is given, to info["language"].
+    """
     from .paths import is_cache_fresh
 
+    info = info if info is not None else {}
+
     try:
-        from .lyrics import (Word, align_to_known_lyrics, read_lyrics_file,
-                             transcribe_words)
+        from .lyrics import (Word, align_to_known_lyrics, prompt_from_lyrics,
+                             read_lyrics_file, resolve_language, transcribe_words)
     except ImportError as exc:
         say(f"lyrics unavailable ({exc}); charting without text")
         return [], "none"
@@ -1089,9 +1105,15 @@ def _run_lyrics(
     inputs_now = {"audio": file_fingerprint(song.analysis_input()),
                   "lyrics": file_fingerprint(song.lyrics_txt)}
 
+    known = read_lyrics_file(song.lyrics_txt)
+    wanted = resolve_language(language, known)
+
     if not force and is_cache_fresh(song.words_json, song.analysis_input(), song.lyrics_txt):
         try:
             payload = json.loads(song.words_json.read_text(encoding="utf-8"))
+            # words.json written before --language existed carries no
+            # "language": those were always transcribed as English.
+            cached_language = payload.get("language", "en")
 
             if payload.get("model") != model:
                 say(f"words cache is from model '{payload.get('model')}', "
@@ -1099,15 +1121,28 @@ def _run_lyrics(
             elif "inputs" in payload and payload["inputs"] != inputs_now:
                 say("words cache does not match the current audio/lyrics; "
                     "re-transcribing")
+            elif wanted is not None and cached_language != wanted:
+                say(f"words cache is in '{cached_language}', '{wanted}' was asked "
+                    f"for; re-transcribing")
             else:
                 words = [Word(**w) for w in payload.get("words", [])]
+                info["language"] = cached_language
                 say(f"words cache hit: {len(words)} words")
                 return words, payload.get("lyricSource", "asr")
         except Exception as exc:                      # noqa: BLE001
             say(f"words cache unreadable ({exc}); re-transcribing")
 
+    # Russian: prime Whisper with the start of the known text. Not done for
+    # English, whose behaviour is kept exactly as it was.
+    prompt = prompt_from_lyrics(known) if wanted == "ru" else None
+    say(f"lyrics language: {wanted or 'auto-detect'} (asked: {language})"
+        + ("; prompting with lyrics.txt" if prompt else ""))
+    asr_info: dict = {}
+
     try:
-        words = transcribe_words(song.analysis_input(), model_size=model, progress=say)
+        words = transcribe_words(song.analysis_input(), model_size=model,
+                                 language=wanted, progress=say,
+                                 initial_prompt=prompt, info_out=asr_info)
     except Exception as exc:                          # noqa: BLE001
         say(f"WARNING: transcription failed ({type(exc).__name__}: {exc}); "
             f"charting without lyrics")
@@ -1116,8 +1151,13 @@ def _run_lyrics(
     if not words:
         return [], "none"
 
+    detected = wanted or asr_info.get("language") or None
+    if wanted is None and detected:
+        say(f"whisper detected language '{detected}' "
+            f"(p={asr_info.get('language_probability', 0.0):.2f})")
+    info["language"] = detected
+
     source = "asr"
-    known = read_lyrics_file(song.lyrics_txt)
 
     if known:
         # ASR is good at WHEN and bad at WHAT on sung audio; lyrics.txt is the
@@ -1135,6 +1175,8 @@ def _run_lyrics(
         song.words_json,
         json.dumps({"lyricSource": source,
                     "model": model,
+                    "language": detected,
+                    "languageChoice": language,
                     "inputs": inputs_now,
                     "words": [w.__dict__ for w in words]},
                    indent=2, ensure_ascii=False) + "\n")
@@ -1148,12 +1190,16 @@ def _run_lyrics(
 @click.option("--model", default="medium", show_default=True,
               help="Whisper model size: tiny/base/small/medium/large-v3. "
                    "Bigger is more accurate and slower.")
-def cmd_lyrics(song_dir: str, force: bool, verbose: bool, model: str) -> None:
+@click.option("--language", default="auto", show_default=True,
+              type=click.Choice(["auto", "ru", "en"], case_sensitive=False),
+              help="Song language (auto: from lyrics.txt, else Whisper detects).")
+def cmd_lyrics(song_dir: str, force: bool, verbose: bool, model: str,
+               language: str) -> None:
     """Stage 3 - word-level lyric timing via faster-whisper (no torch needed)."""
     song = _resolve_song(song_dir)
     say = _progress(verbose or True)
 
-    words, source = _run_lyrics(song, force, say, model)
+    words, source = _run_lyrics(song, force, say, model, language=language)
 
     if not words:
         raise click.ClickException("no words produced — see the warnings above")
@@ -1349,7 +1395,8 @@ def cmd_add_song(ctx: click.Context, audio_file: Path, song_dir: Optional[Path],
                  force: bool, verbose: bool, song_id: Optional[str],
                  library: Optional[Path], lyrics_file: Optional[Path],
                  title: Optional[str], artist: Optional[str], phrase_gap: float,
-                 no_ultrastar: bool, no_lyrics: bool, model: str, no_separate: bool,
+                 no_ultrastar: bool, no_lyrics: bool, model: str, language: str,
+                 no_separate: bool,
                  separator_model: Optional[str], separator_python: Optional[str],
                  progress_json: bool, cancel_file: Optional[Path]) -> None:
     """One audio file in, a playable song folder out.
@@ -1410,6 +1457,7 @@ def cmd_add_song(ctx: click.Context, audio_file: Path, song_dir: Optional[Path],
         # separate_song() decides for itself whether that stem is one of ours.
         return _pipeline(song, rep, force=force, phrase_gap=phrase_gap,
                          no_ultrastar=no_ultrastar, no_lyrics=no_lyrics, model=model,
+                         language=language,
                          separate=not no_separate, separator_model=separator_model,
                          separator_python=separator_python,
                          title=title or guessed_title,

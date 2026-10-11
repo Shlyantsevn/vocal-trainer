@@ -1342,6 +1342,15 @@ void MainComponent::showOverflowMenu()
 
     menu.addItem (1, "Add song...", ! importer.isBusy());
 
+    {
+        const auto lang = settings->getSongLanguage();
+        juce::PopupMenu languages;
+        languages.addItem (30, "Auto", true, lang == "auto");
+        languages.addItem (31, juce::String::fromUTF8 ("Русский"), true, lang == "ru");
+        languages.addItem (32, "English", true, lang == "en");
+        menu.addSubMenu ("Song language", languages, ! importer.isBusy());
+    }
+
     if (inChartMode())
         menu.addItem (2, "Edit chart", true, editMode);
 
@@ -1377,6 +1386,12 @@ void MainComponent::showOverflowMenu()
                             else if (result == 5)
                             {
                                 showThemeMenu();
+                            }
+                            else if (result >= 30 && result <= 32)
+                            {
+                                settings->setSongLanguage (result == 31 ? "ru"
+                                                         : result == 32 ? "en" : "auto");
+                                settings->save();
                             }
                         });
 }
@@ -1777,12 +1792,34 @@ void MainComponent::openAudioChooser()
                               if (f.existsAsFile())
                               {
                                   settings->setLastAudioDirectory (f.getParentDirectory());
-                                  beginImport (f);
+                                  openLyricsChooser (f);
                               }
                           });
 }
 
-void MainComponent::beginImport (const juce::File& audioFile)
+void MainComponent::openLyricsChooser (const juce::File& audioFile)
+{
+    // Optional second step: a plain-text lyrics file. Cancelling imports
+    // without one (ASR lyrics), exactly as before. A "<song name>.txt" next to
+    // the audio is offered first.
+    const auto sibling = audioFile.withFileExtension ("txt");
+
+    lyricsChooser = std::make_unique<juce::FileChooser> (
+        "Lyrics as .txt (optional - Cancel to skip)",
+        sibling.existsAsFile() ? sibling : audioFile.getParentDirectory(),
+        "*.txt");
+
+    lyricsChooser->launchAsync (juce::FileBrowserComponent::openMode
+                                  | juce::FileBrowserComponent::canSelectFiles,
+                                [this, audioFile] (const juce::FileChooser& fc)
+                                {
+                                    const auto txt = fc.getResult();
+                                    beginImport (audioFile, txt.existsAsFile() ? txt
+                                                                               : juce::File());
+                                });
+}
+
+void MainComponent::beginImport (const juce::File& audioFile, const juce::File& lyricsFile)
 {
     juce::String error;
 
@@ -1794,7 +1831,7 @@ void MainComponent::beginImport (const juce::File& audioFile)
     importOverlay.beginImport (audioFile.getFileName());
     resized();
 
-    if (! importer.start (audioFile, error))
+    if (! importer.start (audioFile, error, settings->getSongLanguage(), lyricsFile))
     {
         importOverlay.showFailure (error, {});
         return;

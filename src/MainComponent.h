@@ -80,7 +80,8 @@ private:
 
     //== M3.5: importing a song from an audio file ============================
     void openAudioChooser();
-    void beginImport (const juce::File& audioFile);
+    void beginImport (const juce::File& audioFile, const juce::File& lyricsFile = {});
+    void openLyricsChooser (const juce::File& audioFile);
 
     void setSongPlaying (bool shouldPlay);
     void pushGuideVocalGain();
@@ -225,6 +226,8 @@ private:
     SongImporter importer;
 
     std::unique_ptr<Chart> chart;
+    std::unique_ptr<juce::FileChooser> lyricsChooser;   // separate: launched from
+                                                        // inside chooser's callback
     std::unique_ptr<juce::FileChooser> chooser;   // MUST be a member: a stack-local
                                                   // FileChooser silently never appears.
 

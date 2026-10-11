@@ -178,7 +178,8 @@ juce::String SongImporter::getAudioFilePatterns()
 }
 
 //==============================================================================
-bool SongImporter::start (const juce::File& audioFile, juce::String& error)
+bool SongImporter::start (const juce::File& audioFile, juce::String& error,
+                          const juce::String& language, const juce::File& lyrics)
 {
     if (isThreadRunning())
     {
@@ -198,6 +199,11 @@ bool SongImporter::start (const juce::File& audioFile, juce::String& error)
         return false;
 
     sourceFile = audioFile;
+    lyricsFile = lyrics.existsAsFile() ? lyrics : juce::File();
+    {
+        const auto l = language.trim().toLowerCase();
+        songLanguage = (l == "ru" || l == "en") ? l : juce::String ("auto");
+    }
 
     // In the temp directory rather than the song folder: the song folder does
     // not exist yet at this point, and a stray cancel file left in it by a
@@ -245,6 +251,15 @@ void SongImporter::run()
     cmd.add ("vocalchart.cli");
     cmd.add ("add-song");
     cmd.add (sourceFile.getFullPathName());
+    cmd.add ("--language");
+    cmd.add (songLanguage);
+
+    if (lyricsFile != juce::File())
+    {
+        cmd.add ("--lyrics");
+        cmd.add (lyricsFile.getFullPathName());
+    }
+
     cmd.add ("--progress-json");
     cmd.add ("--cancel-file");
     cmd.add (cancelFile.getFullPathName());

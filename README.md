@@ -210,6 +210,19 @@ difference available in the whole pipeline: known lyrics turn a 20–38% word
 error transcription problem into a pure timing problem. Without it the chart
 still gets words, but they will be wrong often enough to notice.
 
+**Language: `--language auto|ru|en`** (default `auto`). With a lyrics file,
+`auto` picks the language from its alphabet (Cyrillic → `ru`, Latin → `en`,
+so English songs behave exactly as before); without one, Whisper detects it.
+For Russian the start of the lyrics is passed to Whisper as `initial_prompt`,
+words are matched with `ё` = `е`, and syllables are split by vowels (Pyphen
+`ru_RU` for split points; CMUdict is English-only). Lyrics files may be UTF-8
+(with or without BOM), UTF-16 with BOM, or Windows-1251. In the app:
+⋯ → **Song language**, and **Add song...** asks for an optional `.txt`.
+
+```bash
+vocalchart add-song "D:\music\Кино - Группа крови.mp3" --lyrics gruppa-krovi.txt --language ru
+```
+
 ### Practicing against a chart (M3)
 
 1. Build a chart for a song — **Add song...**, `add-song`, or `import-stems`.
