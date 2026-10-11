@@ -456,6 +456,8 @@ Algorithm, in order:
 9. Snap to nearest semitone; **store the raw cents deviation** as `centsOffset` so the app can say "the reference singer was 30 cents flat here."
 10. Merge adjacent notes with the same snapped semitone separated by < 80 ms unless a strong onset peak sits between them.
 
+**2b (added): frame-level vocal activity gate.** Before cutting, a pitched frame only stays voiced if its RMS level is ≥ −60 dBFS and within 35 dB of the song's loud (95th-percentile) voiced level. Unlike step 11 this works per frame and regardless of note count, so pauses with pitched reverb/bleed produce no notes and notes end where singing ends. **6b (added):** candidates with mean pitch confidence < 0.60 are dropped. Both live in `SegmentConfig` (`vad_*`, `min_note_confidence`) and are no-ops without level data.
+
 Also emit the raw contour downsampled to 100 Hz into `chart.contour`.
 
 **Stage 3 — Lyrics. PRIMARY PATH: force-align known text, do not ASR.**

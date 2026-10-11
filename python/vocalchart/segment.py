@@ -164,6 +164,29 @@ class SegmentConfig:
     reject_level_reference_percentile: float = 50.0   # of the song's OWN notes
     reject_level_min_notes: int = 20                  # fewer than this: skip
 
+    # -- step 2b: frame-level vocal activity gate (VAD) ---------------------
+    # Step 11 only runs with >= reject_level_min_notes candidates and only ever
+    # deletes WHOLE notes, so (a) a short song / a sparse section is never
+    # cleaned at all, and (b) a real note whose pitched reverb tail or
+    # separation bleed continues into the pause keeps that tail as part of
+    # its duration - the note ends after the sung phrase. This gate works per
+    # FRAME, before cutting: a frame only counts as voiced if its own level is
+    # plausibly singing. Requires level_db; without it this is a no-op.
+    #
+    # Relative threshold: dB below the song's loud voiced level (percentile of
+    # the confidently-voiced frames) - gain-invariant, like step 11.
+    vad_relative_db: Optional[float] = -35.0
+    vad_reference_percentile: float = 95.0
+    vad_min_reference_frames: int = 25       # fewer voiced frames: relative gate off
+    # Absolute floor: digital near-silence is never singing, whatever the song.
+    vad_absolute_floor_db: Optional[float] = -60.0
+
+    # -- step 6b: note-level pitch-confidence gate --------------------------
+    # Frames already pass confidence_threshold individually; a candidate whose
+    # MEAN confidence barely clears it is a flickering detector on noise, not a
+    # sung note. 0.0 disables.
+    min_note_confidence: float = 0.60
+
     # -- contour ------------------------------------------------------------
     contour_rate_hz: float = 100.0
     contour_decimals: Optional[int] = 3
@@ -198,6 +221,9 @@ class SegmentationResult:
     hop_seconds: float = 0.0
     level_reference_db: float = float("nan")   # what step 11 normalised against
     rejected_silent: int = 0                   # notes step 11 dropped
+    vad_threshold_db: float = float("nan")     # step 2b level threshold used
+    vad_gated_frames: int = 0                  # pitched frames step 2b unvoiced
+    rejected_low_confidence: int = 0           # notes step 6b dropped
     config: SegmentConfig = field(default_factory=SegmentConfig)
 
 
@@ -608,6 +634,36 @@ def _measure(
     return cand
 
 
+def _vad_gate(
+    voiced: np.ndarray,
+    level_db: Optional[np.ndarray],
+    cfg: SegmentConfig,
+) -> Tuple[np.ndarray, float]:
+    """Step 2b: drop pitched frames whose own level is not plausibly singing.
+
+    Returns ``(keep_mask, threshold_db)``. ``keep_mask`` is True everywhere when
+    no level is supplied, so callers without audio behave exactly as before.
+    """
+    keep = np.ones(voiced.shape, dtype=bool)
+    if level_db is None:
+        return keep, float("nan")
+    level = np.asarray(level_db, dtype=float)
+    finite = np.isfinite(level)
+    keep &= finite | ~voiced          # unknown level on a voiced frame: drop it
+
+    threshold = -np.inf
+    if cfg.vad_absolute_floor_db is not None:
+        threshold = max(threshold, float(cfg.vad_absolute_floor_db))
+    ref_frames = voiced & finite
+    if (cfg.vad_relative_db is not None
+            and int(np.count_nonzero(ref_frames)) >= cfg.vad_min_reference_frames):
+        reference = float(np.percentile(level[ref_frames], cfg.vad_reference_percentile))
+        threshold = max(threshold, reference + float(cfg.vad_relative_db))
+    if np.isfinite(threshold):
+        keep &= ~finite | (level >= threshold)
+    return keep, (float(threshold) if np.isfinite(threshold) else float("nan"))
+
+
 def _reject_silent(
     candidates: List["_Candidate"],
     level_db: Optional[np.ndarray],
@@ -802,6 +858,13 @@ def segment_notes(
               & (conf >= cfg.confidence_threshold)
               & (hz >= cfg.min_hz) & (hz <= cfg.max_hz))
 
+    # Step 2b ----------------------------------------------------------------
+    level = _align_flux(level_db, level_db_times, times)
+    vad_keep, vad_threshold = _vad_gate(voiced, level, cfg)
+    result.vad_threshold_db = vad_threshold
+    result.vad_gated_frames = int(np.count_nonzero(voiced & ~vad_keep))
+    voiced = voiced & vad_keep
+
     # Step 3 -----------------------------------------------------------------
     cents_raw = frac * 100.0
     cents_raw = np.where(voiced, cents_raw, np.nan)
@@ -843,7 +906,14 @@ def segment_notes(
         duration = float(times[seg_end] - times[seg_start] + hop)
         if duration + 1e-9 < cfg.min_note_duration_seconds:
             continue
-        candidates.append(_measure(frames, times, hop, pitch_curve, conf, cfg))
+        cand = _measure(frames, times, hop, pitch_curve, conf, cfg)
+        # Step 6b: mean pitch confidence over the note's voiced frames.
+        voiced_conf = conf[frames][voiced[frames]]
+        mean_conf = float(np.mean(voiced_conf)) if voiced_conf.size else 0.0
+        if mean_conf + 1e-9 < cfg.min_note_confidence:
+            result.rejected_low_confidence += 1
+            continue
+        candidates.append(cand)
 
     # Step 10 ----------------------------------------------------------------
     candidates = _merge_candidates(candidates, times, hop, pitch_curve, conf,
@@ -855,7 +925,6 @@ def segment_notes(
     # cut logic or the merge, so it cannot re-break the vibrato or
     # syllable-fusion fixes in DESIGN.md 11.5 - the survivors are a strict
     # subset with identical boundaries.
-    level = _align_flux(level_db, level_db_times, times)
     candidates, level_reference_db, rejected_silent = _reject_silent(candidates, level, cfg)
     result.level_reference_db = level_reference_db
     result.rejected_silent = rejected_silent
