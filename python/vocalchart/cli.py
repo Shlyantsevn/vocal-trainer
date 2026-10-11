@@ -349,6 +349,12 @@ def _run_notes(
                              spectral_flux=flux, spectral_flux_times=flux_times,
                              level_db=level_db, level_db_times=level_times)
 
+    if getattr(produced, "vad_gated_frames", 0):
+        say(f"voice-activity gate: {produced.vad_gated_frames} pitched frames below "
+            f"{produced.vad_threshold_db:.1f} dBFS treated as silence (no notes there)")
+    if getattr(produced, "rejected_low_confidence", 0):
+        say(f"rejected {produced.rejected_low_confidence} low-confidence notes "
+            f"(mean pitch confidence < {cfg.min_note_confidence:.2f})")
     if getattr(produced, "rejected_silent", 0):
         say(f"rejected {produced.rejected_silent} silent notes "
             f"(>{abs(cfg.reject_level_db):.0f} dB below this song's median note level "
